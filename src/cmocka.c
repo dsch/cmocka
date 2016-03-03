@@ -301,6 +301,8 @@ static CMOCKA_THREAD ListNode global_allocated_blocks;
 
 static enum cm_message_output global_msg_output = CM_OUTPUT_STDOUT;
 
+static FILE* global_output_fp = NULL;
+
 #ifndef _WIN32
 /* Signals caught by exception_handler(). */
 static const int exception_signals[] = {
@@ -2098,6 +2100,44 @@ enum cm_printf_type {
     PRINTF_TEST_SKIPPED,
 };
 
+static void close_global_output_file(void) {
+    fclose(global_output_fp);
+}
+
+static void close_xml_tag(void) {
+    fprintf(global_output_fp, "</testsuites>\n");
+}
+
+static FILE* open_output_file(void)
+{
+    FILE *fp = stdout;
+    char *env = getenv ("CMOCKA_XML_FILE");
+    if (env != NULL)
+    {
+        char buf[1024];
+        snprintf (buf, sizeof(buf), "%s", env);
+        fp = fopen (buf, "r");
+        if (fp == NULL)
+        {
+            fp = fopen (buf, "w");
+            if (fp != NULL)
+            {
+                atexit (close_global_output_file);
+            }
+            else
+            {
+                fp = stderr;
+            }
+        }
+        else
+        {
+            fclose(fp);
+            fp = stderr;
+        }
+    }
+    return fp;
+}
+
 static void cmprintf_group_finish_xml(const char *group_name,
                                       size_t total_executed,
                                       size_t total_failed,
@@ -2106,33 +2146,16 @@ static void cmprintf_group_finish_xml(const char *group_name,
                                       double total_runtime,
                                       struct CMUnitTestState *cm_tests)
 {
-    FILE *fp = stdout;
-    int file_opened = 0;
-    char *env;
     size_t i;
 
-    env = getenv("CMOCKA_XML_FILE");
-    if (env != NULL) {
-        char buf[1024];
-        snprintf(buf, sizeof(buf), "%s", env);
-
-        fp = fopen(buf, "r");
-        if (fp == NULL) {
-            fp = fopen(buf, "w");
-            if (fp != NULL) {
-                file_opened = 1;
-            } else {
-                fp = stderr;
-            }
-        } else {
-            fclose(fp);
-            fp = stderr;
-        }
+    if (global_output_fp == NULL) {
+        global_output_fp = open_output_file();
+        fprintf (global_output_fp, "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n");
+        fprintf (global_output_fp, "<testsuites>\n");
+        atexit (close_xml_tag);
     }
 
-    fprintf(fp, "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n");
-    fprintf(fp, "<testsuites>\n");
-    fprintf(fp, "  <testsuite name=\"%s\" time=\"%.3f\" "
+    fprintf(global_output_fp, "  <testsuite name=\"%s\" time=\"%.3f\" "
                 "tests=\"%u\" failures=\"%u\" errors=\"%u\" skipped=\"%u\" >\n",
                 group_name,
                 total_runtime * 1000, /* miliseconds */
@@ -2144,21 +2167,21 @@ static void cmprintf_group_finish_xml(const char *group_name,
     for (i = 0; i < total_executed; i++) {
         struct CMUnitTestState *cmtest = &cm_tests[i];
 
-        fprintf(fp, "    <testcase name=\"%s\" time=\"%.3f\" >\n",
+        fprintf(global_output_fp, "    <testcase name=\"%s\" time=\"%.3f\" >\n",
                 cmtest->test->name, cmtest->runtime * 1000);
 
         switch (cmtest->status) {
         case CM_TEST_ERROR:
         case CM_TEST_FAILED:
             if (cmtest->error_message != NULL) {
-                fprintf(fp, "      <failure><![CDATA[%s]]></failure>\n",
+                fprintf(global_output_fp, "      <failure><![CDATA[%s]]></failure>\n",
                         cmtest->error_message);
             } else {
-                fprintf(fp, "      <failure message=\"Unknown error\" />\n");
+                fprintf(global_output_fp, "      <failure message=\"Unknown error\" />\n");
             }
             break;
         case CM_TEST_SKIPPED:
-            fprintf(fp, "      <skipped/>\n");
+            fprintf(global_output_fp, "      <skipped/>\n");
             break;
 
         case CM_TEST_PASSED:
@@ -2166,15 +2189,10 @@ static void cmprintf_group_finish_xml(const char *group_name,
             break;
         }
 
-        fprintf(fp, "    </testcase>\n");
+        fprintf(global_output_fp, "    </testcase>\n");
     }
 
-    fprintf(fp, "  </testsuite>\n");
-    fprintf(fp, "</testsuites>\n");
-
-    if (file_opened) {
-        fclose(fp);
-    }
+    fprintf(global_output_fp, "  </testsuite>\n");
 }
 
 static void cmprintf_group_start_standard(const size_t num_tests)
